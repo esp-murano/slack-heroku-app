@@ -7,6 +7,7 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
+# 環境変数取得
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -19,16 +20,19 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
 processed_events = set()
 
+# イベント処理用関数（非同期）
 def handle_event(event):
     channel = event.get('channel')
+    text = event.get('text', '')
+    channel_type = event.get('channel_type')
 
-    # 画像が添付されている場合の処理
+    # 画像処理（画像が添付されている場合）
     if 'files' in event:
         for file_info in event['files']:
             if file_info['mimetype'].startswith('image/'):
                 image_url = file_info['url_private']
 
-                # Slackから画像をダウンロード
+                # 画像をSlackからダウンロード
                 response = requests.get(image_url, headers=headers)
                 if response.status_code != 200:
                     slack_client.chat_postMessage(channel=channel, text="画像の取得に失敗しました。")
@@ -36,7 +40,7 @@ def handle_event(event):
 
                 image_data = response.content
 
-                # Geminiで画像認識
+                # Geminiで画像認識を実行
                 try:
                     gemini_response = model.generate_content(
                         ["画像について説明してください。", {"mime_type": file_info['mimetype'], "data": image_data}]
@@ -48,20 +52,15 @@ def handle_event(event):
                 slack_client.chat_postMessage(channel=channel, text=reply_text)
                 return
 
-    # 通常のテキストメッセージ処理
-    text = event.get('text', '')
-    channel_type = event.get('channel_type')
-
-    # BOTへのメンションかDM以外は無視
-    if channel_type != 'im' and f"<@{bot_user_id}>" not in text:
-        return
-
-    try:
-        gemini_response = model.generate_content(text)
-        reply_text = gemini_response.text.strip()
-        slack_client.chat_postMessage(channel=channel, text=reply_text)
-    except Exception as e:
-        slack_client.chat_postMessage(channel=channel, text=f"エラーが発生しました: {e}")
+    # テキストによる指示の場合の処理（生成AIの主要機能）
+    if channel_type == 'im' or f"<@{bot_user_id}>" in text:
+        # Geminiに文章生成や要約、質問応答を指示
+        try:
+            gemini_response = model.generate_content(text)
+            reply_text = gemini_response.text.strip()
+            slack_client.chat_postMessage(channel=channel, text=reply_text)
+        except Exception as e:
+            slack_client.chat_postMessage(channel=channel, text=f"エラーが発生しました: {e}")
 
 @app.route('/slack/events', methods=['POST'])
 def slack_events():
@@ -81,6 +80,7 @@ def slack_events():
     if event.get('user') == bot_user_id or 'bot_id' in event:
         return jsonify({"status": "ignored bot message"})
 
+    # 非同期でイベント処理を実行
     threading.Thread(target=handle_event, args=(event,)).start()
 
     return jsonify({"status": "accepted"}), 200
