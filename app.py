@@ -13,8 +13,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERVICE_ACCOUNT_INFO = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 
 slack_client = WebClient(token=SLACK_BOT_TOKEN)
-bot_user_id = slack_client.auth_test()['user_id']  # 自分のBOTのIDを取得
-
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
@@ -32,16 +30,21 @@ def slack_events():
 
     event = data.get('event', {})
 
-    # BOT自身のメッセージは無視する（これがポイント！）
-    if event.get('user') == bot_user_id or 'bot_id' in event:
+    # BOT自身やBOT投稿メッセージは無視する
+    if 'bot_id' in event:
         return jsonify({"status": "ignored bot message"})
 
     text = event.get('text')
     channel = event.get('channel')
+    channel_type = event.get('channel_type')
 
-    # メンションがある場合のみ反応する
-    if f"<@{bot_user_id}>" not in text:
-        return jsonify({"status": "ignored no mention"})
+    # BOTのユーザーID取得（安全な方法）
+    auth_test = slack_client.auth_test()
+    bot_user_id = auth_test.get('user_id')
+
+    # DMまたはメンションがある場合のみ反応する
+    if channel_type != 'im' and f"<@{bot_user_id}>" not in text:
+        return jsonify({"status": "ignored no mention or not DM"})
 
     # Geminiでキーワード抽出
     gemini_response = model.generate_content(
