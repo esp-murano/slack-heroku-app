@@ -1,5 +1,6 @@
 import os
 import threading
+import requests
 from flask import Flask, request, jsonify
 from slack_sdk import WebClient
 import google.generativeai as genai
@@ -15,11 +16,40 @@ bot_user_id = slack_client.auth_test()['user_id']
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
+headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
 processed_events = set()
 
 def handle_event(event):
-    text = event.get('text')
     channel = event.get('channel')
+
+    # 画像が添付されている場合の処理
+    if 'files' in event:
+        for file_info in event['files']:
+            if file_info['mimetype'].startswith('image/'):
+                image_url = file_info['url_private']
+
+                # Slackから画像をダウンロード
+                response = requests.get(image_url, headers=headers)
+                if response.status_code != 200:
+                    slack_client.chat_postMessage(channel=channel, text="画像の取得に失敗しました。")
+                    return
+
+                image_data = response.content
+
+                # Geminiで画像認識
+                try:
+                    gemini_response = model.generate_content(
+                        ["画像について説明してください。", {"mime_type": file_info['mimetype'], "data": image_data}]
+                    )
+                    reply_text = gemini_response.text.strip()
+                except Exception as e:
+                    reply_text = f"画像認識中にエラーが発生しました: {e}"
+
+                slack_client.chat_postMessage(channel=channel, text=reply_text)
+                return
+
+    # 通常のテキストメッセージ処理
+    text = event.get('text', '')
     channel_type = event.get('channel_type')
 
     # BOTへのメンションかDM以外は無視
@@ -51,10 +81,8 @@ def slack_events():
     if event.get('user') == bot_user_id or 'bot_id' in event:
         return jsonify({"status": "ignored bot message"})
 
-    # イベント処理を別スレッドで行う（非同期）
     threading.Thread(target=handle_event, args=(event,)).start()
 
-    # Slackに即時レスポンス（3秒以内に返すため）
     return jsonify({"status": "accepted"}), 200
 
 if __name__ == '__main__':
