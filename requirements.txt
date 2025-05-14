@@ -1,0 +1,6 @@
+flask
+slack_sdk
+google-generativeai
+google-api-python-client
+google-auth
+gunicorn
