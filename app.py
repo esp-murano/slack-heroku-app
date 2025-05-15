@@ -5,6 +5,7 @@ import re
 from flask import Flask, request, jsonify
 from slack_sdk import WebClient
 import google.generativeai as genai
+import base64
 
 app = Flask(__name__)
 
@@ -15,15 +16,20 @@ slack_client = WebClient(token=SLACK_BOT_TOKEN)
 bot_user_id = slack_client.auth_test()['user_id']
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model_text = genai.GenerativeModel('gemini-1.5-flash')
+model_image = genai.GenerativeModel('gemini-1.5-flash')
 
 headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
-processed_events = set()
+processed_event_ids = set()
 
 def clean_text(text):
     return re.sub(r'<@[\w]+>', '', text).strip()
 
-def handle_event(event):
+def handle_event(event, event_id):
+    if event_id in processed_event_ids:
+        return  # 重複イベントの処理を防ぐ
+    processed_event_ids.add(event_id)
+
     channel = event.get('channel')
     text = clean_text(event.get('text', ''))
     channel_type = event.get('channel_type')
@@ -46,25 +52,47 @@ def handle_event(event):
                 break
 
     if image_data:
-        prompt = f"{text}\nこの画像の人物を元にストーリーを作ってください。" if text else "この画像の人物を元にストーリーを作ってください。"
+        prompt = f"{text}\nこの画像の人物を元に短いストーリーを書いてください。" if text else "この画像の人物を元に短いストーリーを書いてください。"
         try:
-            gemini_response = model.generate_content([
+            gemini_response = model_text.generate_content([
                 prompt,
                 {"mime_type": mime_type, "data": image_data}
             ])
             reply_text = gemini_response.text.strip()
+            
+            # 画像生成の追加処理
+            image_prompt = f"{text}\n画像の人物を元に新しい画像を生成してください。"
+            generated_image_response = model_image.generate_content([
+                image_prompt,
+                {"mime_type": mime_type, "data": image_data}
+            ], stream=False)
+
+            if generated_image_response.parts and len(generated_image_response.parts) > 0:
+                generated_image_data = generated_image_response.parts[0].inline_data.data
+                generated_image_bytes = base64.b64decode(generated_image_data)
+
+                # Slackに生成画像をアップロード
+                slack_client.files_upload(
+                    channels=channel,
+                    file=generated_image_bytes,
+                    filename='generated_image.png',
+                    title='AI生成画像',
+                    initial_comment="こちらはAIが生成した画像です。"
+                )
+
         except Exception as e:
-            reply_text = f"画像認識またはストーリー生成中にエラーが発生しました: {e}"
+            reply_text = f"エラーが発生しました: {e}"
+
+        slack_client.chat_postMessage(channel=channel, text=reply_text)
+
     elif channel_type == 'im' or text:
         try:
-            gemini_response = model.generate_content(text)
+            gemini_response = model_text.generate_content(text)
             reply_text = gemini_response.text.strip()
         except Exception as e:
             reply_text = f"エラーが発生しました: {e}"
-    else:
-        return
 
-    slack_client.chat_postMessage(channel=channel, text=reply_text)
+        slack_client.chat_postMessage(channel=channel, text=reply_text)
 
 @app.route('/slack/events', methods=['POST'])
 def slack_events():
@@ -76,14 +104,10 @@ def slack_events():
     event = data.get('event', {})
     event_id = data.get('event_id')
 
-    if event_id in processed_events:
-        return jsonify({"status": "duplicate event ignored"})
-    processed_events.add(event_id)
-
     if event.get('user') == bot_user_id or 'bot_id' in event:
         return jsonify({"status": "ignored bot message"})
 
-    threading.Thread(target=handle_event, args=(event,)).start()
+    threading.Thread(target=handle_event, args=(event, event_id)).start()
 
     return jsonify({"status": "accepted"}), 200
 
