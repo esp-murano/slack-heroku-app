@@ -8,7 +8,6 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# 環境変数取得
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -22,7 +21,6 @@ headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
 processed_events = set()
 
 def clean_text(text):
-    # Slackのメンション表記を削除する（<@U12345>という形式）
     return re.sub(r'<@[\w]+>', '', text).strip()
 
 def handle_event(event):
@@ -30,7 +28,9 @@ def handle_event(event):
     text = clean_text(event.get('text', ''))
     channel_type = event.get('channel_type')
 
-    # 画像が添付されている場合
+    image_data = None
+    mime_type = None
+
     if 'files' in event:
         for file_info in event['files']:
             if file_info['mimetype'].startswith('image/'):
@@ -42,27 +42,29 @@ def handle_event(event):
                     return
 
                 image_data = response.content
+                mime_type = file_info['mimetype']
+                break
 
-                try:
-                    gemini_response = model.generate_content([
-                        f"{text}\n画像について説明してください。" if text else "画像について説明してください。",
-                        {"mime_type": file_info['mimetype'], "data": image_data}
-                    ])
-                    reply_text = gemini_response.text.strip()
-                except Exception as e:
-                    reply_text = f"画像認識中にエラーが発生しました: {e}"
-
-                slack_client.chat_postMessage(channel=channel, text=reply_text)
-                return
-
-    # テキストのみの場合の処理
-    if channel_type == 'im' or text:
+    if image_data:
+        prompt = f"{text}\nこの画像の人物を元にストーリーを作ってください。" if text else "この画像の人物を元にストーリーを作ってください。"
+        try:
+            gemini_response = model.generate_content([
+                prompt,
+                {"mime_type": mime_type, "data": image_data}
+            ])
+            reply_text = gemini_response.text.strip()
+        except Exception as e:
+            reply_text = f"画像認識またはストーリー生成中にエラーが発生しました: {e}"
+    elif channel_type == 'im' or text:
         try:
             gemini_response = model.generate_content(text)
             reply_text = gemini_response.text.strip()
-            slack_client.chat_postMessage(channel=channel, text=reply_text)
         except Exception as e:
-            slack_client.chat_postMessage(channel=channel, text=f"エラーが発生しました: {e}")
+            reply_text = f"エラーが発生しました: {e}"
+    else:
+        return
+
+    slack_client.chat_postMessage(channel=channel, text=reply_text)
 
 @app.route('/slack/events', methods=['POST'])
 def slack_events():
