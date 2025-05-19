@@ -29,6 +29,9 @@ def clean_text(text):
 
 def upload_image_to_slack(channel, image_bytes, filename="generated_image.png", initial_comment="AIが生成した画像です"):
     try:
+        if not isinstance(image_bytes, bytes) or len(image_bytes) == 0:
+            slack_client.chat_postMessage(channel=channel, text="生成画像データが不正です。")
+            return
         slack_client.files_upload_v2(
             channel=channel,
             file=image_bytes,
@@ -36,15 +39,13 @@ def upload_image_to_slack(channel, image_bytes, filename="generated_image.png", 
             initial_comment=initial_comment
         )
     except SlackApiError as e:
-        raise Exception(f"Slackアップロードエラー: {e.response['error']}")
+        slack_client.chat_postMessage(channel=channel, text=f"Slackアップロードエラー: {e.response['error']}")
 
 def handle_event(event, event_id):
-    # イベントIDで重複排除
     if event_id in processed_event_ids:
         return
     processed_event_ids.add(event_id)
 
-    # メッセージTSで重複排除
     msg_ts = event.get('ts')
     if msg_ts in processed_messages:
         return
@@ -71,7 +72,6 @@ def handle_event(event, event_id):
                 mime_type = file_info['mimetype']
                 break
 
-    # 画像つきはapp_mentionイベントで返答しない
     if has_image and event.get('type') == 'app_mention':
         return
 
@@ -93,16 +93,28 @@ def handle_event(event, event_id):
             if generated_image_response.parts and len(generated_image_response.parts) > 0:
                 generated_image_data = generated_image_response.parts[0].inline_data.data
 
-                # bytes型・str型両方対応＆base64デコード
+                # bytes型・str型どちらでも str化して処理
                 if isinstance(generated_image_data, bytes):
                     decoded_str = generated_image_data.decode("utf-8")
                 else:
                     decoded_str = generated_image_data
 
+                # base64画像が空の場合はエラー
+                if not decoded_str or not decoded_str.strip():
+                    slack_client.chat_postMessage(channel=channel, text="AI生成画像のデータが空です。")
+                    return
+
+                # プレフィックスの有無で分岐し、base64デコード
                 if decoded_str.startswith("data:"):
-                    generated_image_bytes = base64.b64decode(decoded_str.split(",")[-1])
+                    base64_img = decoded_str.split(",")[-1]
                 else:
-                    generated_image_bytes = base64.b64decode(decoded_str)
+                    base64_img = decoded_str
+
+                try:
+                    generated_image_bytes = base64.b64decode(base64_img)
+                except Exception as e:
+                    slack_client.chat_postMessage(channel=channel, text=f"base64 decode失敗: {e}")
+                    return
 
                 upload_image_to_slack(
                     channel=channel,
