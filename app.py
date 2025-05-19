@@ -21,12 +21,12 @@ model_text = genai.GenerativeModel('gemini-1.5-flash')
 model_image = genai.GenerativeModel('gemini-1.5-flash')
 
 headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
-processed_event_ids = set()
+processed_events = set()
+processed_messages = set()
 
 def clean_text(text):
     return re.sub(r'<@[\w]+>', '', text).strip()
 
-# Slack SDKの最新推奨の方法 (files_upload_v2) を使用
 def upload_image_to_slack(channel, image_bytes, filename="generated_image.png", initial_comment="AIが生成した画像です"):
     try:
         slack_client.files_upload_v2(
@@ -39,9 +39,16 @@ def upload_image_to_slack(channel, image_bytes, filename="generated_image.png", 
         raise Exception(f"Slackアップロードエラー: {e.response['error']}")
 
 def handle_event(event, event_id):
-    if event_id in processed_event_ids:
+    # 1. イベントIDで重複判定
+    if event_id in processed_events:
         return
-    processed_event_ids.add(event_id)
+    processed_events.add(event_id)
+
+    # 2. メッセージTSで重複判定
+    msg_ts = event.get('ts')
+    if msg_ts in processed_messages:
+        return
+    processed_messages.add(msg_ts)
 
     channel = event.get('channel')
     text = clean_text(event.get('text', ''))
@@ -50,18 +57,24 @@ def handle_event(event, event_id):
     image_data = None
     mime_type = None
 
+    # 画像つきメッセージ判定
+    has_image = False
     if 'files' in event:
         for file_info in event['files']:
             if file_info['mimetype'].startswith('image/'):
+                has_image = True
                 image_url = file_info['url_private']
                 response = requests.get(image_url, headers=headers)
                 if response.status_code != 200:
                     slack_client.chat_postMessage(channel=channel, text="画像の取得に失敗しました。")
                     return
-
                 image_data = response.content
                 mime_type = file_info['mimetype']
                 break
+
+    # 画像つきは、message.channels/message.imのイベントでのみ返答（app_mentionイベントは無視）
+    if has_image and event.get('type') == 'app_mention':
+        return
 
     if image_data:
         prompt = f"{text}\nこの画像を元に短いストーリーを書いてください。" if text else "この画像を元に短いストーリーを書いてください。"
@@ -72,7 +85,6 @@ def handle_event(event, event_id):
             ])
             reply_text = gemini_response.text.strip()
 
-            # 汎用プロンプトに修正
             image_prompt = f"{text}\nこの画像を元に新しい画像を生成してください。"
             generated_image_response = model_image.generate_content([
                 image_prompt,
@@ -81,9 +93,13 @@ def handle_event(event, event_id):
 
             if generated_image_response.parts and len(generated_image_response.parts) > 0:
                 generated_image_data = generated_image_response.parts[0].inline_data.data
-                generated_image_bytes = base64.b64decode(generated_image_data.split(",")[-1])
 
-                # 正しい方法で画像アップロード
+                # プレフィックス(data:image/png;base64,)の有無を確認して処理
+                if generated_image_data.startswith("data:"):
+                    generated_image_bytes = base64.b64decode(generated_image_data.split(",")[-1])
+                else:
+                    generated_image_bytes = base64.b64decode(generated_image_data)
+
                 upload_image_to_slack(
                     channel=channel,
                     image_bytes=generated_image_bytes,
