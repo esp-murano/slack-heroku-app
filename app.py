@@ -2,6 +2,7 @@ import os
 import threading
 import requests
 import re
+import tempfile
 from flask import Flask, request, jsonify
 from slack_sdk import WebClient
 import google.generativeai as genai
@@ -27,7 +28,7 @@ def clean_text(text):
 
 def handle_event(event, event_id):
     if event_id in processed_event_ids:
-        return  # 重複イベントの処理を防ぐ
+        return
     processed_event_ids.add(event_id)
 
     channel = event.get('channel')
@@ -60,7 +61,7 @@ def handle_event(event, event_id):
             ])
             reply_text = gemini_response.text.strip()
             
-            # 画像生成の追加処理
+            # 新規画像生成の追加処理
             image_prompt = f"{text}\n画像の人物を元に新しい画像を生成してください。"
             generated_image_response = model_image.generate_content([
                 image_prompt,
@@ -71,10 +72,15 @@ def handle_event(event, event_id):
                 generated_image_data = generated_image_response.parts[0].inline_data.data
                 generated_image_bytes = base64.b64decode(generated_image_data)
 
-                # Slackに生成画像をアップロード
-                slack_client.files_upload(
-                    channels=channel,
-                    file=generated_image_bytes,
+                # 一時ファイルに生成画像を保存
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
+                    temp_file.write(generated_image_bytes)
+                    temp_file_path = temp_file.name
+
+                # Slackのfiles.uploadV2を使ってファイルアップロード
+                slack_client.files_upload_v2(
+                    channel=channel,
+                    file=temp_file_path,
                     filename='generated_image.png',
                     title='AI生成画像',
                     initial_comment="こちらはAIが生成した画像です。"
