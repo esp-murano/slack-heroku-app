@@ -27,7 +27,7 @@ def clean_text(text):
     return re.sub(r'<@[\w]+>', '', text).strip()
 
 def upload_image_v2(channel, image_bytes, filename='generated_image.png', title='AI生成画像', initial_comment='こちらはAIが生成した画像です。'):
-    # Step 1: Slackから外部アップロードURLを取得
+    # Step 1: Slackから外部アップロードURLを取得 (必須パラメータ明記)
     response = slack_client.api_call(
         api_method='files.getUploadURLExternal',
         json={
@@ -104,10 +104,13 @@ def handle_event(event, event_id):
                 generated_image_data = generated_image_response.parts[0].inline_data.data
                 generated_image_bytes = base64.b64decode(generated_image_data)
 
-                # 新しいSlack API方式でアップロード
+                # Slack API (v2) で画像をアップロード
                 upload_image_v2(
                     channel=channel,
-                    image_bytes=generated_image_bytes
+                    image_bytes=generated_image_bytes,
+                    filename='generated_image.png',  # ファイル名必須
+                    title='AI生成画像',
+                    initial_comment="こちらはAIが生成した画像です。"
                 )
 
         except Exception as e:
