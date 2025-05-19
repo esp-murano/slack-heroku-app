@@ -26,6 +26,38 @@ processed_event_ids = set()
 def clean_text(text):
     return re.sub(r'<@[\w]+>', '', text).strip()
 
+def upload_image_v2(channel, image_bytes, filename='generated_image.png', title='AI生成画像', initial_comment='こちらはAIが生成した画像です。'):
+    # Step 1: Slackから外部アップロードURLを取得
+    response = slack_client.api_call(
+        api_method='files.getUploadURLExternal',
+        json={
+            "filename": filename,
+            "length": len(image_bytes)
+        }
+    )
+    if not response['ok']:
+        raise Exception(f"Slackエラー (URL取得失敗): {response['error']}")
+
+    upload_url = response['upload_url']
+    file_id = response['file_id']
+
+    # Step 2: 外部URLに画像をアップロード
+    upload_response = requests.put(upload_url, data=image_bytes, headers={'Content-Type': 'application/octet-stream'})
+    if upload_response.status_code != 200:
+        raise Exception(f"外部アップロード失敗 (status code: {upload_response.status_code})")
+
+    # Step 3: ファイルをSlackに投稿
+    complete_response = slack_client.api_call(
+        api_method='files.completeUploadExternal',
+        json={
+            "files": [{"id": file_id, "title": title}],
+            "channel_id": channel,
+            "initial_comment": initial_comment
+        }
+    )
+    if not complete_response['ok']:
+        raise Exception(f"Slackエラー (投稿失敗): {complete_response['error']}")
+
 def handle_event(event, event_id):
     if event_id in processed_event_ids:
         return
@@ -60,8 +92,8 @@ def handle_event(event, event_id):
                 {"mime_type": mime_type, "data": image_data}
             ])
             reply_text = gemini_response.text.strip()
-            
-            # 新規画像生成の追加処理
+
+            # 画像生成処理
             image_prompt = f"{text}\n画像の人物を元に新しい画像を生成してください。"
             generated_image_response = model_image.generate_content([
                 image_prompt,
@@ -72,18 +104,10 @@ def handle_event(event, event_id):
                 generated_image_data = generated_image_response.parts[0].inline_data.data
                 generated_image_bytes = base64.b64decode(generated_image_data)
 
-                # 一時ファイルに生成画像を保存
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
-                    temp_file.write(generated_image_bytes)
-                    temp_file_path = temp_file.name
-
-                # Slackのfiles.uploadV2を使ってファイルアップロード
-                slack_client.files_upload_v2(
+                # 新しいSlack API方式でアップロード
+                upload_image_v2(
                     channel=channel,
-                    file=temp_file_path,
-                    filename='generated_image.png',
-                    title='AI生成画像',
-                    initial_comment="こちらはAIが生成した画像です。"
+                    image_bytes=generated_image_bytes
                 )
 
         except Exception as e:
