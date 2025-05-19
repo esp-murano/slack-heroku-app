@@ -2,11 +2,11 @@ import os
 import threading
 import requests
 import re
-import tempfile
+import base64
 from flask import Flask, request, jsonify
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 import google.generativeai as genai
-import base64
 
 app = Flask(__name__)
 
@@ -26,34 +26,17 @@ processed_event_ids = set()
 def clean_text(text):
     return re.sub(r'<@[\w]+>', '', text).strip()
 
-def upload_image_v2(channel, image_bytes, filename='generated_image.png', title='AI生成画像', initial_comment='こちらはAIが生成した画像です。'):
-    slack_response = slack_client.api_call(
-        api_method='files.getUploadURLExternal',
-        json={
-            "filename": filename,
-            "length": len(image_bytes)
-        }
-    )
-    if not slack_response.get('ok'):
-        raise Exception(f"Slackエラー (URL取得失敗): {slack_response.get('error')}")
-
-    upload_url = slack_response['upload_url']
-    file_id = slack_response['file_id']
-
-    upload_response = requests.put(upload_url, data=image_bytes, headers={'Content-Type': 'application/octet-stream'})
-    if upload_response.status_code != 200:
-        raise Exception(f"外部アップロード失敗 (status code: {upload_response.status_code})")
-
-    complete_response = slack_client.api_call(
-        api_method='files.completeUploadExternal',
-        json={
-            "files": [{"id": file_id, "title": title}],
-            "channel_id": channel,
-            "initial_comment": initial_comment
-        }
-    )
-    if not complete_response.get('ok'):
-        raise Exception(f"Slackエラー (投稿失敗): {complete_response.get('error')}")
+# Slack SDKの最新推奨の方法 (files_upload_v2) を使用
+def upload_image_to_slack(channel, image_bytes, filename="generated_image.png", initial_comment="AIが生成した画像です"):
+    try:
+        slack_client.files_upload_v2(
+            channel=channel,
+            file=image_bytes,
+            filename=filename,
+            initial_comment=initial_comment
+        )
+    except SlackApiError as e:
+        raise Exception(f"Slackアップロードエラー: {e.response['error']}")
 
 def handle_event(event, event_id):
     if event_id in processed_event_ids:
@@ -89,7 +72,7 @@ def handle_event(event, event_id):
             ])
             reply_text = gemini_response.text.strip()
 
-            # 汎用的な画像生成プロンプト（修正版）
+            # 汎用プロンプトに修正
             image_prompt = f"{text}\nこの画像を元に新しい画像を生成してください。"
             generated_image_response = model_image.generate_content([
                 image_prompt,
@@ -98,13 +81,13 @@ def handle_event(event, event_id):
 
             if generated_image_response.parts and len(generated_image_response.parts) > 0:
                 generated_image_data = generated_image_response.parts[0].inline_data.data
-                generated_image_bytes = base64.b64decode(generated_image_data)
+                generated_image_bytes = base64.b64decode(generated_image_data.split(",")[-1])
 
-                upload_image_v2(
+                # 正しい方法で画像アップロード
+                upload_image_to_slack(
                     channel=channel,
                     image_bytes=generated_image_bytes,
                     filename='generated_image.png',
-                    title='AI生成画像',
                     initial_comment="こちらはAIが生成した画像です。"
                 )
 
