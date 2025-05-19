@@ -17,8 +17,8 @@ slack_client = WebClient(token=SLACK_BOT_TOKEN)
 bot_user_id = slack_client.auth_test()['user_id']
 
 genai.configure(api_key=GEMINI_API_KEY)
-model_text = genai.GenerativeModel('gemini-2.0-flash')
-model_image = genai.GenerativeModel('gemini-2.0-flash')
+model_text = genai.GenerativeModel('gemini-2.0-flash-preview-image-generation')
+model_image = genai.GenerativeModel('gemini-2.0-flash-preview-image-generation')
 
 headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
 processed_event_ids = set()
