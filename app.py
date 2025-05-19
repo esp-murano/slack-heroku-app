@@ -21,7 +21,7 @@ model_text = genai.GenerativeModel('gemini-1.5-flash')
 model_image = genai.GenerativeModel('gemini-1.5-flash')
 
 headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
-processed_events = set()
+processed_event_ids = set()
 processed_messages = set()
 
 def clean_text(text):
@@ -39,12 +39,12 @@ def upload_image_to_slack(channel, image_bytes, filename="generated_image.png", 
         raise Exception(f"Slackアップロードエラー: {e.response['error']}")
 
 def handle_event(event, event_id):
-    # 1. イベントIDで重複判定
-    if event_id in processed_events:
+    # イベントIDで重複排除
+    if event_id in processed_event_ids:
         return
-    processed_events.add(event_id)
+    processed_event_ids.add(event_id)
 
-    # 2. メッセージTSで重複判定
+    # メッセージTSで重複排除
     msg_ts = event.get('ts')
     if msg_ts in processed_messages:
         return
@@ -56,9 +56,8 @@ def handle_event(event, event_id):
 
     image_data = None
     mime_type = None
-
-    # 画像つきメッセージ判定
     has_image = False
+
     if 'files' in event:
         for file_info in event['files']:
             if file_info['mimetype'].startswith('image/'):
@@ -72,7 +71,7 @@ def handle_event(event, event_id):
                 mime_type = file_info['mimetype']
                 break
 
-    # 画像つきは、message.channels/message.imのイベントでのみ返答（app_mentionイベントは無視）
+    # 画像つきはapp_mentionイベントで返答しない
     if has_image and event.get('type') == 'app_mention':
         return
 
@@ -94,11 +93,16 @@ def handle_event(event, event_id):
             if generated_image_response.parts and len(generated_image_response.parts) > 0:
                 generated_image_data = generated_image_response.parts[0].inline_data.data
 
-                # プレフィックス(data:image/png;base64,)の有無を確認して処理
-                if generated_image_data.startswith("data:"):
-                    generated_image_bytes = base64.b64decode(generated_image_data.split(",")[-1])
+                # bytes型・str型両方対応＆base64デコード
+                if isinstance(generated_image_data, bytes):
+                    decoded_str = generated_image_data.decode("utf-8")
                 else:
-                    generated_image_bytes = base64.b64decode(generated_image_data)
+                    decoded_str = generated_image_data
+
+                if decoded_str.startswith("data:"):
+                    generated_image_bytes = base64.b64decode(decoded_str.split(",")[-1])
+                else:
+                    generated_image_bytes = base64.b64decode(decoded_str)
 
                 upload_image_to_slack(
                     channel=channel,
