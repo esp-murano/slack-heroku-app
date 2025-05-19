@@ -17,8 +17,7 @@ slack_client = WebClient(token=SLACK_BOT_TOKEN)
 bot_user_id = slack_client.auth_test()['user_id']
 
 genai.configure(api_key=GEMINI_API_KEY)
-model_text = genai.GenerativeModel('gemini-2.0-flash-preview-image-generation')
-model_image = genai.GenerativeModel('gemini-2.0-flash-preview-image-generation')
+model_text = genai.GenerativeModel('gemini-2.0-flash')
 
 headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
 processed_event_ids = set()
@@ -26,6 +25,25 @@ processed_messages = set()
 
 def clean_text(text):
     return re.sub(r'<@[\w]+>', '', text).strip()
+
+def generate_image_by_gemini(prompt):
+    API_KEY = GEMINI_API_KEY
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key={API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": prompt}]
+            }
+        ]
+    }
+    res = requests.post(url, headers=headers, json=data)
+    res_json = res.json()
+    if "candidates" not in res_json:
+        return None, "Gemini API画像生成に失敗しました"
+    base64_img = res_json["candidates"][0]["content"]["parts"][0]["inline_data"]["data"]
+    return base64_img, None
 
 def upload_image_to_slack(channel, image_bytes, filename="generated_image.png", initial_comment="AIが生成した画像です"):
     try:
@@ -78,40 +96,30 @@ def handle_event(event, event_id):
     if image_data:
         prompt = f"{text}\nこの画像を元に短いストーリーを書いてください。" if text else "この画像を元に短いストーリーを書いてください。"
         try:
+            # ストーリー生成（テキスト）
             gemini_response = model_text.generate_content([
                 prompt,
                 {"mime_type": mime_type, "data": image_data}
             ])
             reply_text = gemini_response.text.strip()
 
+            # 画像生成（Geminiプレビュー画像生成API利用）
             image_prompt = f"{text}\nこの画像を元に新しい画像を生成してください。"
-            generated_image_response = model_image.generate_content([
-                image_prompt,
-                {"mime_type": mime_type, "data": image_data}
-            ], stream=False)
-
-            if generated_image_response.parts and len(generated_image_response.parts) > 0:
-                generated_image_data = generated_image_response.parts[0].inline_data.data
-
-                # bytes型・str型どちらでも str化して処理
-                if isinstance(generated_image_data, bytes):
-                    decoded_str = generated_image_data.decode("utf-8")
-                else:
-                    decoded_str = generated_image_data
-
-                # base64画像が空の場合はエラー
-                if not decoded_str or not decoded_str.strip():
+            base64_img, error = generate_image_by_gemini(image_prompt)
+            if error:
+                slack_client.chat_postMessage(channel=channel, text=error)
+            else:
+                # base64画像が空の場合もエラー
+                if not base64_img or not base64_img.strip():
                     slack_client.chat_postMessage(channel=channel, text="AI生成画像のデータが空です。")
                     return
-
-                # プレフィックスの有無で分岐し、base64デコード
-                if decoded_str.startswith("data:"):
-                    base64_img = decoded_str.split(",")[-1]
+                # プレフィックス対応
+                if base64_img.startswith("data:"):
+                    base64_img_data = base64_img.split(",")[-1]
                 else:
-                    base64_img = decoded_str
-
+                    base64_img_data = base64_img
                 try:
-                    generated_image_bytes = base64.b64decode(base64_img)
+                    generated_image_bytes = base64.b64decode(base64_img_data)
                 except Exception as e:
                     slack_client.chat_postMessage(channel=channel, text=f"base64 decode失敗: {e}")
                     return
